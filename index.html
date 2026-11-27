@@ -89,11 +89,12 @@ button { cursor: pointer; }
 .thumb .acts button:hover { color: var(--accent); }
 .thumb .acts .ic { width: 14px; height: 14px; }
 
-.viewer { position: relative; overflow: auto; background: var(--desk); min-width: 0; }
+.viewer { position: relative; overflow: auto; background: var(--desk); min-width: 0; touch-action: pan-x pan-y; overscroll-behavior: contain; }
 .pages { display: flex; flex-direction: column; align-items: center; gap: 22px; padding: 28px 24px 60px; width: max-content; min-width: 100%; box-sizing: border-box; }
 .page { position: relative; background: #fff; box-shadow: var(--paper-shadow); flex: none; }
 .page canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
-.page .ov { position: absolute; inset: 0; touch-action: none; }
+.page .ov { position: absolute; inset: 0; touch-action: pan-x pan-y; }
+.ov[data-tool="draw"], .ov[data-tool="whiteout"], .ov[data-tool="highlight"], .ov[data-tool="redact"], .ov[data-tool="box"], .ov [data-oid], .ov .handle { touch-action: none; }
 .page .pnum { position: absolute; left: 0; bottom: -19px; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .ov[data-tool="text"], .ov[data-tool="place"] { cursor: text; }
 .ov[data-tool="place"] { cursor: copy; }
@@ -117,6 +118,7 @@ button { cursor: pointer; }
 .o-ink .hit { pointer-events: stroke; cursor: move; }
 .o-ink.sel path.vis { filter: drop-shadow(0 0 2px #2351c9); outline: none; }
 .handle { position: absolute; right: -6px; bottom: -6px; width: 11px; height: 11px; background: #fff; border: 2px solid #2351c9; border-radius: 3px; cursor: nwse-resize; }
+@media (pointer: coarse) { .handle { width: 22px; height: 22px; right: -12px; bottom: -12px; border-radius: 50%; } }
 .draft { position: absolute; border: 1.5px dashed #2351c9; background: rgba(35,81,201,.08); pointer-events: none; }
 .titem { position: absolute; border-radius: 2px; cursor: text; }
 .titem:hover { outline: 1.5px solid #2351c9; background: rgba(35,81,201,.10); }
@@ -209,7 +211,10 @@ kbd { font: 11.5px var(--f-mono); background: var(--panel-2); border: 1px solid 
   .work { grid-template-columns: minmax(0,1fr); grid-template-rows: auto minmax(0,1fr); }
   .thumbs { border-right: 0; border-bottom: 1px solid var(--line); }
   .tlist { flex-direction: row; overflow-x: auto; padding: 4px 10px 8px; gap: 6px; }
-  .thumb { flex: none; width: 74px; }
+  .thumb { flex: none; width: auto; padding: 4px; gap: 2px; }
+  .thumb canvas { width: 44px !important; height: auto !important; }
+  .thumbs header { padding: 6px 10px 2px; }
+  .tlist { padding: 2px 10px 6px; }
   .thumb .acts { display: none !important; }
   .tb .lbl { display: none; }
   .bar { flex-wrap: nowrap; overflow-x: auto; }
@@ -218,6 +223,8 @@ kbd { font: 11.5px var(--f-mono); background: var(--panel-2); border: 1px solid 
   .privacy { display: none; }
   .paper { padding: 28px 22px; }
   .props .hint { display: none; }
+  .props { flex-wrap: nowrap; overflow-x: auto; }
+  .props label, .props .tb { flex: none; }
 }
 </style>
 </head>
@@ -484,7 +491,7 @@ const TOOL_NOTES = {
   draw: "Draw freehand with mouse, pen or finger.",
   place: "Click on a page to place the image or signature.",
 };
-const HINTS = { edittext: "Click a line of text to edit it", text: "Click on the page to add text", highlight: "Drag to highlight", whiteout: "Drag to white-out", redact: "Drag over content to redact", box: "Drag to draw a rectangle", draw: "Draw on the page", place: "Click where the item should go" };
+const HINTS = { edittext: "Tap or click a line of text to edit it", text: "Tap or click the page to add text", highlight: "Drag to highlight", whiteout: "Drag to white-out", redact: "Drag over content to redact", box: "Drag to draw a rectangle", draw: "Draw on the page", place: "Tap or click where the item should go" };
 
 /* ---------------- page geometry (user space ↔ viewer) ---------------- */
 function pageInfo(pg) {
@@ -618,7 +625,7 @@ function buildViewer() {
     wrap.append(cv, ov, num); host.append(wrap);
     const pe = { wrap, cv, ov, key: "", task: null }; pageEls.push(pe);
     ov.addEventListener("pointerdown", e => onDown(e, i));
-    ov.addEventListener("dblclick", e => { const t = e.target.closest(".o-text"); if (t) { const o = findObj(i, t.dataset.oid); if (o) startEdit(i, o); } });
+    ov.addEventListener("click", e => onTap(e, i));
     io.observe(wrap); renderOverlay(i);
   });
   $("#zoomVal").textContent = Math.round(S.zoom * 100) + "%";
@@ -776,7 +783,8 @@ function mountEditor(i) {
   ta.addEventListener("keydown", e => { if (e.key === "Escape") { e.preventDefault(); ta.blur(); } e.stopPropagation(); });
   ta.addEventListener("pointerdown", e => e.stopPropagation());
   pageEls[i].ov.append(ta); fit();
-  requestAnimationFrame(() => { ta.focus(); if (ed.selectAll) ta.select(); else ta.setSelectionRange(ta.value.length, ta.value.length); ed.selectAll = false; });
+  // Focus inside the same tap/click: Android and iOS only open the keyboard for focus() during a user gesture.
+  ta.focus(); if (ed.selectAll) ta.select(); else ta.setSelectionRange(ta.value.length, ta.value.length); ed.selectAll = false;
 }
 function finishEdit() {
   const ed = S.editing; if (!ed) return; S.editing = null;
@@ -796,32 +804,21 @@ function syncTextHeights(i) {
 let drag = null;
 function localPt(e, ov) { const r = ov.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
 function onDown(e, i) {
-  if (e.button !== 0 && e.pointerType === "mouse") return;
+  if ((e.button !== 0 && e.pointerType === "mouse") || !e.isPrimary || zoomPreview) return;
   const t = e.target; if (t.classList.contains("fw") || t.tagName === "TEXTAREA") return;
   const pe = pageEls[i], pg = S.pages[i], info = pageInfo(pg), s = S.zoom; const [x, y] = localPt(e, pe.ov);
   S.cur = i; markCurThumb();
-  if (S.editing) { finishEdit(); if (S.tool !== "select") return; }
+  if (S.editing) { finishEdit(); S.swallowUntil = performance.now() + 700; if (S.tool !== "select") return; } // this tap only closes the editor
   const tool = S.tool;
-  if (tool === "edittext") { const ti = t.closest(".titem"); if (ti) { e.preventDefault(); editExisting(i, +ti.dataset.k); } return; }
-  if (tool === "text") {
-    const te = t.closest(".o-text"); const ex = te && findObj(i, te.dataset.oid);
-    if (ex) { startEdit(i, ex); return; }
-    e.preventDefault(); pushUndo();
-    const p = S.props; const o = { id: uid(), type: "text", R: info.R, text: "", font: p.font, size: p.size, bold: p.bold, italic: p.italic, color: p.color, r: rectFromView(info, x - PAD * s, y - (p.size * 0.6 + PAD) * s, 220 * s, (p.size * 1.25 + 2 * PAD) * s, s) };
-    pg.objs.push(o); startEdit(i, o); return;
-  }
-  if (tool === "place") {
-    e.preventDefault(); const im = S.images[S.pending.img]; const wpt = S.pending.width; const hpt = wpt * im.h / im.w;
-    pushUndo(); const o = { id: uid(), type: "image", R: info.R, img: S.pending.img, r: rectFromView(info, x - wpt * s / 2, y - hpt * s / 2, wpt * s, hpt * s, s) };
-    pg.objs.push(o); S.pending = null; S.sel = { page: i, id: o.id }; setTool("select"); renderOverlay(i); updProps(); return;
-  }
+  if (tool === "edittext" || tool === "text" || tool === "place") return; // handled in onTap, so a finger can still scroll the page
+
   if (tool === "select") {
     const oe = t.closest("[data-oid]");
     if (!oe) { if (S.sel) { const p = S.sel.page; S.sel = null; renderOverlay(p); updProps(); } return; }
     e.preventDefault();
     const o = findObj(i, oe.dataset.oid); if (!o) return;
     const prev = S.sel; S.sel = { page: i, id: o.id }; if (prev && prev.page !== i) renderOverlay(prev.page);
-    drag = { kind: t.dataset.handle ? "resize" : "move", i, o, sx: x, sy: y, orig: JSON.parse(JSON.stringify(o)), moved: false };
+    drag = { kind: t.dataset.handle ? "resize" : "move", i, o, sx: x, sy: y, orig: JSON.parse(JSON.stringify(o)), moved: false, wasSel: !!(prev && prev.id === o.id) };
     pe.ov.setPointerCapture(e.pointerId); renderOverlay(i); updProps(); return;
   }
   e.preventDefault();
@@ -830,7 +827,7 @@ function onDown(e, i) {
   pe.ov.setPointerCapture(e.pointerId);
 }
 window.addEventListener("pointermove", e => {
-  if (!drag) return; const pe = pageEls[drag.i]; if (!pe) return;
+  if (!drag || zoomPreview) return; const pe = pageEls[drag.i]; if (!pe) return;
   const [x, y] = localPt(e, pe.ov); const pg = S.pages[drag.i], info = pageInfo(pg), s = S.zoom;
   if (drag.kind === "rect") { const l = Math.min(x, drag.sx), t = Math.min(y, drag.sy); Object.assign(drag.el.style, { left: l + "px", top: t + "px", width: Math.abs(x - drag.sx) + "px", height: Math.abs(y - drag.sy) + "px" }); return; }
   if (drag.kind === "ink") {
@@ -867,7 +864,30 @@ window.addEventListener("pointerup", () => {
     pg.objs.push({ id: uid(), type: "ink", color: S.props.color, width: S.props.stroke, pts: d.pts.map(p => v2u(info, p[0], p[1], s).map(n => +n.toFixed(2))) });
     renderOverlay(d.i);
   } else if (d.kind === "resize" && d.o.type === "text") syncTextHeights(d.i);
+  else if (d.kind === "move" && !d.moved && d.wasSel && d.o.type === "text") { startEdit(d.i, d.o); S.swallowUntil = performance.now() + 700; } // second tap on selected text edits it (pointerup is a user gesture, so the keyboard opens)
 });
+function onTap(e, i) {
+  const now = performance.now();
+  if (now < (S.swallowUntil || 0) || now - (S.lastZoom || 0) < 400) { S.swallowUntil = 0; return; }
+  const t = e.target; if (t.classList.contains("fw") || t.tagName === "TEXTAREA") return;
+  const pe = pageEls[i], pg = S.pages[i]; if (!pe || !pg) return;
+  const info = pageInfo(pg), s = S.zoom; const [x, y] = localPt(e, pe.ov);
+  const tool = S.tool;
+  if (tool === "edittext") { const ti = t.closest(".titem"); if (ti) editExisting(i, +ti.dataset.k); return; }
+  if (tool === "text") {
+    const te = t.closest(".o-text"); const ex = te && findObj(i, te.dataset.oid);
+    if (ex) { startEdit(i, ex); return; }
+    pushUndo();
+    const p = S.props; const bw = Math.max(60 * s, Math.min(220 * s, viewSize(info, s).w - x - 4));
+    const o = { id: uid(), type: "text", R: info.R, text: "", font: p.font, size: p.size, bold: p.bold, italic: p.italic, color: p.color, r: rectFromView(info, x - PAD * s, y - (p.size * 0.6 + PAD) * s, bw, (p.size * 1.25 + 2 * PAD) * s, s) };
+    pg.objs.push(o); startEdit(i, o); return;
+  }
+  if (tool === "place" && S.pending) {
+    const im = S.images[S.pending.img]; const wpt = S.pending.width; const hpt = wpt * im.h / im.w;
+    pushUndo(); const o = { id: uid(), type: "image", R: info.R, img: S.pending.img, r: rectFromView(info, x - wpt * s / 2, y - hpt * s / 2, wpt * s, hpt * s, s) };
+    pg.objs.push(o); S.pending = null; S.sel = { page: i, id: o.id }; setTool("select"); renderOverlay(i); updProps();
+  }
+}
 
 /* ---------------- tools / props ---------------- */
 function setTool(t) {
@@ -1011,6 +1031,38 @@ function fitWidth(silent) {
   const maxW = Math.max(...S.pages.map(pg => viewSize(pageInfo(pg), 1).w), 300);
   const z = clamp(avail / maxW, 0.25, 2); if (silent) { S.zoom = Math.round(z * 100) / 100; } else setZoom(z);
 }
+// Pinch (two fingers) and Ctrl/⌘ + scroll: preview with a CSS scale, then re-render once at the new zoom, keeping the point under the fingers in place.
+let zoomPreview = null, wheelTimer = 0;
+const vEl = $("#viewer"), pagesEl = $("#pages");
+function beginZoomPreview(cx, cy) {
+  const vr = vEl.getBoundingClientRect(); const fx = cx - vr.left, fy = cy - vr.top;
+  zoomPreview = { z0: S.zoom, k: 1, fx, fy, px: vEl.scrollLeft + fx, py: vEl.scrollTop + fy };
+  pagesEl.style.transformOrigin = `${zoomPreview.px}px ${zoomPreview.py}px`; pagesEl.style.willChange = "transform";
+}
+function previewZoom(k) { const z = zoomPreview; z.k = clamp(k, 0.25 / z.z0, 4 / z.z0); pagesEl.style.transform = `scale(${z.k})`; }
+function commitZoom() {
+  const z = zoomPreview; zoomPreview = null; pagesEl.style.transform = ""; pagesEl.style.willChange = ""; S.lastZoom = performance.now();
+  if (!z || Math.abs(z.k - 1) < 0.02) return;
+  setZoom(z.z0 * z.k, false); const r = S.zoom / z.z0;
+  vEl.scrollLeft = z.px * r - z.fx; vEl.scrollTop = z.py * r - z.fy;
+}
+const tdist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+let pinchD0 = 0;
+vEl.addEventListener("touchstart", e => {
+  if (e.touches.length !== 2) return; e.preventDefault();
+  if (drag) { if (drag.el) drag.el.remove(); if (drag.svg) drag.svg.remove(); drag = null; }
+  const [a, b] = e.touches; pinchD0 = tdist(a, b) || 1; if (zoomPreview) commitZoom();
+  beginZoomPreview((a.clientX + b.clientX) / 2, (a.clientY + b.clientY) / 2);
+}, { passive: false });
+vEl.addEventListener("touchmove", e => { if (!zoomPreview || e.touches.length !== 2) return; e.preventDefault(); previewZoom(tdist(e.touches[0], e.touches[1]) / pinchD0); }, { passive: false });
+const endPinch = e => { if (zoomPreview && e.touches.length < 2 && !wheelTimer) commitZoom(); };
+vEl.addEventListener("touchend", endPinch); vEl.addEventListener("touchcancel", endPinch);
+vEl.addEventListener("wheel", e => {
+  if (!e.ctrlKey && !e.metaKey) return; e.preventDefault();
+  if (!zoomPreview) beginZoomPreview(e.clientX, e.clientY);
+  previewZoom(zoomPreview.k * Math.exp(-e.deltaY * 0.004));
+  clearTimeout(wheelTimer); wheelTimer = setTimeout(() => { wheelTimer = 0; commitZoom(); }, 220);
+}, { passive: false });
 $("#bZoomIn").onclick = () => setZoom(S.zoom * 1.2);
 $("#bZoomOut").onclick = () => setZoom(S.zoom / 1.2);
 $("#bFit").onclick = () => fitWidth();

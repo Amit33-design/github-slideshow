@@ -11,6 +11,10 @@ A PDF editor that runs entirely in the browser. Files are processed on your devi
 - **PDF to Word** — PDF to editable `.docx`; scanned pages are inserted as images.
 - **Images to PDF** — combine JPG/PNG/WebP images into one PDF.
 
+## Mobile
+
+Works on phones and tablets: pinch with two fingers to zoom, swipe with one finger to scroll, tap a line in Edit text mode to retype it, and tap selected text again to edit it. On a computer, Ctrl (or Cmd) + scroll zooms.
+
 ## How it works
 
 A single static `index.html`. Libraries load from cdnjs: pdf.js 3.11.174 (rendering), pdf-lib 1.17.1 (writing PDFs), mammoth 1.6.0 (reading .docx) and JSZip 3.10.1 (writing .docx).
