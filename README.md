@@ -7,6 +7,7 @@ A PDF editor that runs entirely in the browser. Files are processed on your devi
 ## Features
 
 - **Edit PDF** — edit existing text, add text, highlight, white-out, redact (content is permanently removed), shapes, freehand drawing, images and signatures; fill PDF forms; reorder, rotate, delete and insert pages; merge PDFs; extract or split pages; undo/redo.
+- **Text recognition (OCR)** — scanned PDFs and PDFs whose text was saved as shapes have no editable text; Edit text offers to recognize it on the device (tesseract.js, English), after which each line or table cell can be tapped and edited.
 - **Word to PDF** — `.docx` to PDF with selectable text (headings, bold/italic, lists, tables, images).
 - **PDF to Word** — PDF to editable `.docx`; scanned pages are inserted as images.
 - **Images to PDF** — combine JPG/PNG/WebP images into one PDF.
@@ -22,7 +23,7 @@ A single static `index.html`. Libraries load from cdnjs: pdf.js 3.11.174 (render
 ## Known limits
 
 - Edited and added text uses the standard PDF fonts (Helvetica, Times, Courier); characters outside Western European alphabets become "?".
-- PDF to Word rebuilds paragraphs, not exact layout; tables and columns become plain lines. No OCR for scanned pages.
+- PDF to Word rebuilds paragraphs, not exact layout; tables and columns become plain lines. PDF to Word does not run OCR; scanned pages are inserted as images.
 - Legacy `.doc` files are not supported; save as `.docx` first.
 - Encrypted PDFs are saved with pages as images.
 

@@ -421,7 +421,7 @@ function toast(msg, err) { const d = h("div", err ? "err" : "", { textContent: m
 async function busy(label, fn) {
   const b = h("div", "busy"); const inner = h("div"); inner.append(h("span", "spin"), h("span", "", { textContent: label })); b.append(inner); document.body.append(b);
   await new Promise(r => setTimeout(r, 30));
-  try { return await fn(); } catch (e) { console.error(e); toast(e && e.message ? e.message : String(e), true); return null; } finally { b.remove(); }
+  try { return await fn(t => { inner.lastChild.textContent = t; }); } catch (e) { console.error(e); toast(e && e.message ? e.message : String(e), true); return null; } finally { b.remove(); }
 }
 let DL = null;
 (async () => { try { if (window.claude && window.claude.use) DL = await window.claude.use("downloads"); } catch { DL = null; } })();
@@ -658,7 +658,7 @@ function renderOverlay(i) {
     if (!items) textItems(pg).then(() => { if (S.tool === "edittext" && S.pages[i] === pg) renderOverlay(i); });
     else {
       const used = new Set(pg.objs.filter(o => o.item != null).map(o => o.item));
-      if (i === S.cur) $("#floathint").textContent = items.some(it => uprightOn(it, info)) ? HINTS.edittext : "No editable text on this page. It may be a scanned image: use White-out, then Add text.";
+      if (i === S.cur) $("#floathint").textContent = items.some(it => uprightOn(it, info)) ? HINTS.edittext : "This page is an image of text. Tap it to recognize the text.";
       items.forEach((it, k) => {
         if (used.has(k) || !uprightOn(it, info)) return;
         const [bx, by] = u2v(info, it.e, it.f, s);
@@ -744,6 +744,74 @@ async function textItems(pg) {
   if (cur) out.push(cur);
   src.text[pg.index] = out.map(c => ({ ...c, str: c.str.replace(/\s+$/, "") })).filter(c => c.str.trim());
   return src.text[pg.index];
+}
+/* ---------------- text recognition (OCR) for pages that are images of text ---------------- */
+const TESS = { js: "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js", worker: "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/worker.min.js", core: "https://cdn.jsdelivr.net/npm/tesseract.js-core@5.1.1", lang: "https://cdn.jsdelivr.net/npm/@tesseract.js-data/eng@1.0.0/4.0.0_best_int" };
+let ocrWorker = null, ocrProgress = null;
+const loadScript = src => new Promise((res, rej) => { if (window.Tesseract) return res(); const sc = h("script", "", { src, async: true }); sc.onload = res; sc.onerror = () => rej(new Error("Couldn't load text recognition. Check your internet connection and try again.")); document.head.append(sc); });
+async function getOcr() {
+  if (ocrWorker) return ocrWorker;
+  await loadScript(TESS.js);
+  const w = Tesseract.createWorker("eng", 1, { workerPath: TESS.worker, corePath: TESS.core, langPath: TESS.lang, logger: m => { if (ocrProgress) ocrProgress(m); } });
+  const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error("Text recognition took too long to load. Check your connection and try again.")), 90000));
+  ocrWorker = await Promise.race([w, timeout]);
+  return ocrWorker;
+}
+// Prepare a page image for OCR: black text on white, with table rules and shaded cells removed (they confuse line detection).
+function cleanForOcr(c) {
+  const ctx = c.getContext("2d"), W = c.width, H = c.height, img = ctx.getImageData(0, 0, W, H), d = img.data;
+  const dark = new Uint8Array(W * H), kill = new Uint8Array(W * H);
+  for (let i = 0, j = 0; j < W * H; i += 4, j++) dark[j] = (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) < 160 ? 1 : 0;
+  const minRun = Math.round(Math.min(W, H) * 0.05);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W;) { if (!dark[y * W + x]) { x++; continue; } let e = x; while (e < W && dark[y * W + e]) e++; if (e - x >= minRun) for (let q = x; q < e; q++) kill[y * W + q] = 1; x = e; }
+  for (let x = 0; x < W; x++) for (let y = 0; y < H;) { if (!dark[y * W + x]) { y++; continue; } let e = y; while (e < H && dark[e * W + x]) e++; if (e - y >= minRun) for (let q = y; q < e; q++) kill[q * W + x] = 1; y = e; }
+  for (let i = 0, j = 0; j < W * H; i += 4, j++) { const v = dark[j] && !kill[j] ? 0 : 255; d[i] = d[i + 1] = d[i + 2] = v; d[i + 3] = 255; }
+  ctx.putImageData(img, 0, 0);
+}
+async function ocrPage(i, onProg) {
+  const pg = S.pages[i], info = pageInfo(pg), p = S.srcs[pg.src].pages[pg.index];
+  const sz = viewSize(info, 1); const k = clamp(2400 / Math.max(sz.w, sz.h), 1.5, 4);
+  const vp = p.getViewport({ scale: k, rotation: info.R });
+  const c = h("canvas"); c.width = Math.round(vp.width); c.height = Math.round(vp.height);
+  const ctx = c.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
+  await p.render({ canvasContext: ctx, viewport: vp, annotationMode: pdfjsLib.AnnotationMode.ENABLE }).promise;
+  cleanForOcr(c);
+  ocrProgress = onProg;
+  let data; try { data = (await (await getOcr()).recognize(c)).data; } finally { ocrProgress = null; }
+  const items = [];
+  for (const ln of data.lines || []) {
+    const words = (ln.words || []).filter(wd => wd.text.trim() && wd.confidence > 45 && /[\p{L}\p{N}]/u.test(wd.text));
+    if (!words.length) continue;
+    const top = Math.min(...words.map(wd => wd.bbox.y0)), bottom = Math.max(...words.map(wd => wd.bbox.y1));
+    let base = ln.baseline && ln.baseline.has_baseline !== false ? (ln.baseline.y0 + ln.baseline.y1) / 2 : NaN;
+    if (!(base > top && base <= bottom + 1)) base = bottom - (bottom - top) * 0.18;
+    const size = Math.max(4, (base - top) / k / 0.72);
+    let chunk = [];
+    const flush = () => {
+      if (!chunk.length) return; const x0 = chunk[0].bbox.x0, x1 = chunk[chunk.length - 1].bbox.x1; const [e, f] = v2u(info, x0 / k, base / k, 1);
+      // Size from this chunk's own tallest glyphs (cap/ascender height is ~0.72 of the font size); lowercase-only chunks fall back to the line.
+      const ctop = Math.min(...chunk.map(wd => wd.bbox.y0)); const own = (base - ctop) / k / 0.72;
+      const sz = /[A-Z0-9bdfhklt]/.test(chunk.map(wd => wd.text).join("")) && own > 3 ? own : size;
+      items.push({ str: chunk.map(wd => wd.text).join(" "), e, f, size: +sz.toFixed(2), w: (x1 - x0) / k, ang: info.R, fam: "Helvetica", bold: chunk.every(wd => wd.is_bold), italic: false, ocr: true });
+    };
+    for (const wd of words) { const prev = chunk[chunk.length - 1]; if (prev && (wd.bbox.x0 - prev.bbox.x1) / k > size * 1.6) { flush(); chunk = []; } chunk.push(wd); } // split table columns
+    flush();
+  }
+  S.srcs[pg.src].text[pg.index] = items; return items;
+}
+function offerOcr(i) {
+  if ($("#modalRoot").childElementCount) return;
+  const m = h("div", "modal"); const d = h("div", "dlg");
+  d.innerHTML = `<h2>Recognize the text on this page?</h2><p style="margin:0;color:var(--muted)">This page is a picture of text (a scan, or text saved as shapes), so there are no words to edit yet. Text recognition reads them from the image so you can tap a line and change it. It runs on your device; the first time, it downloads about 5 MB.</p><p style="margin:0;color:var(--muted);font-size:13px">Recognized lines are rewritten in Helvetica, so they may look slightly different from the original font.</p><div class="acts"><button class="btn" id="ocNo">Not now</button><button class="btn primary" id="ocYes">Recognize text</button></div>`;
+  m.append(d); $("#modalRoot").append(m);
+  $("#ocNo", d).onclick = () => m.remove();
+  $("#ocYes", d).onclick = async () => {
+    m.remove();
+    const items = await busy("Loading text recognition…", set => ocrPage(i, ev => { if (ev.status === "recognizing text") set(`Reading text… ${Math.round(ev.progress * 100)}%`); else if (ev.status) set("Loading text recognition…"); }));
+    if (!items) return;
+    renderOverlay(i);
+    if (items.length) toast(`Found ${items.length} line${items.length > 1 ? "s" : ""} of text. Tap one to edit it.`); else toast("No text was recognized on this page.", true);
+  };
 }
 const uprightOn = (it, info) => { const d = (((it.ang - info.R) % 360) + 360) % 360; return d < 2 || d > 358; };
 function sampleColor(i, l, t, w, hh) {
@@ -896,7 +964,7 @@ function onTap(e, i) {
       if (d < bd) { bd = d; best = el; }
     }
     if (!best || bd > (touchy ? 28 : 8)) {
-      if (!best) toast(items.length ? "The text on this page can't be edited in place (it is rotated or drawn as shapes). Use White-out, then Add text." : "No editable text on this page. It may be a scanned image: use White-out, then Add text.", true);
+      if (!best) { if (items.length) toast("The text on this page is rotated, so it can't be edited in place. Rotate the page in the page list, or use White-out, then Add text.", true); else offerOcr(i); }
       else toast("Tap on a line of text (outlined with a dashed box). Pinch to zoom in if the text is small.");
       return;
     }
