@@ -1,13 +1,32 @@
-# Your GitHub Learning Lab Repository for Introducing GitHub
+# Folio PDF Studio
 
-Welcome to **your** repository for your GitHub Learning Lab course. This repository will be used during the different activities that I will be guiding you through. See a word you don't understand? We've included an emoji 📖 next to some key terms. Click on it to see its definition.
+A PDF editor that runs entirely in the browser. Files are processed on your device and never uploaded.
 
-Oh! I haven't introduced myself...
+**Live site:** https://amit33-design.github.io/github-slideshow/
 
-I'm the GitHub Learning Lab bot and I'm here to help guide you in your journey to learn and master the various topics covered in this course. I will be using Issue and Pull Request comments to communicate with you. In fact, I already added an issue for you to check out.
+## Features
 
-![issue tab](https://lab.github.com/public/images/issue_tab.png)
+- **Edit PDF** — edit existing text, add text, highlight, white-out, redact (content is permanently removed), shapes, freehand drawing, images and signatures; fill PDF forms; reorder, rotate, delete and insert pages; merge PDFs; extract or split pages; undo/redo.
+- **Text recognition (OCR)** — scanned PDFs and PDFs whose text was saved as shapes have no editable text; Edit text offers to recognize it on the device (tesseract.js, English), after which each line or table cell can be tapped and edited.
+- **Word to PDF** — `.docx` to PDF with selectable text (headings, bold/italic, lists, tables, images).
+- **PDF to Word** — PDF to editable `.docx`; scanned pages are inserted as images.
+- **Images to PDF** — combine JPG/PNG/WebP images into one PDF.
 
-I'll meet you over there, can't wait to get started!
+## Mobile
 
-This course is using the :sparkles: open source project [reveal.js](https://github.com/hakimel/reveal.js/). In some cases we’ve made changes to the history so it would behave during class, so head to the original project repo to learn more about the cool people behind this project.
+Works on phones and tablets: pinch with two fingers to zoom, swipe with one finger to scroll, tap a line in Edit text mode to retype it, and tap selected text again to edit it. On a computer, Ctrl (or Cmd) + scroll zooms.
+
+## How it works
+
+A single static `index.html`. Libraries load from cdnjs: pdf.js 3.11.174 (rendering), pdf-lib 1.17.1 (writing PDFs), mammoth 1.6.0 (reading .docx) and JSZip 3.10.1 (writing .docx).
+
+## Known limits
+
+- Edited and added text uses the standard PDF fonts (Helvetica, Times, Courier); characters outside Western European alphabets become "?".
+- PDF to Word rebuilds paragraphs, not exact layout; tables and columns become plain lines. PDF to Word does not run OCR; scanned pages are inserted as images.
+- Legacy `.doc` files are not supported; save as `.docx` first.
+- Encrypted PDFs are saved with pages as images.
+
+## Run locally
+
+Open `index.html` in a browser, or serve the folder: `python3 -m http.server`.
