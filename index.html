@@ -658,6 +658,7 @@ function renderOverlay(i) {
     if (!items) textItems(pg).then(() => { if (S.tool === "edittext" && S.pages[i] === pg) renderOverlay(i); });
     else {
       const used = new Set(pg.objs.filter(o => o.item != null).map(o => o.item));
+      if (i === S.cur) $("#floathint").textContent = items.some(it => uprightOn(it, info)) ? HINTS.edittext : "No editable text on this page. It may be a scanned image: use White-out, then Add text.";
       items.forEach((it, k) => {
         if (used.has(k) || !uprightOn(it, info)) return;
         const [bx, by] = u2v(info, it.e, it.f, s);
@@ -690,6 +691,7 @@ function objEl(o, info, s) {
   if (o.type === "text") {
     el.style.height = ""; el.style.minHeight = (o.size * 1.25 + 2 * PAD) * s + "px";
     Object.assign(el.style, { fontFamily: CSSF[o.font], fontSize: o.size * s + "px", fontWeight: o.bold ? 700 : 400, fontStyle: o.italic ? "italic" : "normal", color: o.color, padding: PAD * s + "px" });
+    if (o.nowrap) { el.style.whiteSpace = "pre"; el.style.width = ""; el.style.minWidth = v.w + "px"; } // an edited line stays one line, like the original
     el.textContent = o.text; if (!o.text) el.classList.add("empty");
     if (S.editing && S.editing.id === o.id) el.style.visibility = "hidden";
   } else if (o.type === "highlight") el.style.background = hexA(o.color, 0.4);
@@ -755,13 +757,18 @@ function sampleColor(i, l, t, w, hh) {
   if (!col || best > 600) return null;
   return "#" + col.map(c => c.toString(16).padStart(2, "0")).join("");
 }
-function editExisting(i, k) {
+function itemColor(i, k) {
   const pg = S.pages[i], info = pageInfo(pg), it = S.srcs[pg.src].text[pg.index][k];
   const [bx, by] = u2v(info, it.e, it.f, 1);
-  const color = sampleColor(i, bx * S.zoom, (by - it.size * 0.9) * S.zoom, it.w * S.zoom, it.size * 1.1 * S.zoom) || "#000000";
+  return sampleColor(i, bx * S.zoom, (by - it.size * 0.9) * S.zoom, it.w * S.zoom, it.size * 1.1 * S.zoom);
+}
+function editExisting(i, k, sampled) {
+  const pg = S.pages[i], info = pageInfo(pg), it = S.srcs[pg.src].text[pg.index][k];
+  const [bx, by] = u2v(info, it.e, it.f, 1);
+  const color = sampled || itemColor(i, k) || "#000000";
   pushUndo();
   const t = by - PAD - it.size * BASELINE[it.fam];
-  const o = { id: uid(), type: "text", R: info.R, item: k, text: it.str, font: it.fam, size: +it.size.toFixed(2), bold: it.bold, italic: it.italic, color,
+  const o = { id: uid(), type: "text", R: info.R, item: k, nowrap: true, text: it.str, font: it.fam, size: +it.size.toFixed(2), bold: it.bold, italic: it.italic, color,
     r: rectFromView(info, bx - PAD, t, it.w * 1.15 + 2 * PAD + it.size, it.size * 1.25 + 2 * PAD, 1),
     cover: rectFromView(info, bx - 1.5, by - it.size * 0.98, it.w + 3, it.size * 1.3, 1) };
   pg.objs.push(o); S.sel = { page: i, id: o.id }; renderOverlay(i); startEdit(i, o, true);
@@ -777,7 +784,11 @@ function mountEditor(i) {
   const ta = h("textarea", "editbox"); ta.value = o.text; ta.spellcheck = true; ta.setAttribute("aria-label", "Text");
   Object.assign(ta.style, { left: v.l + "px", top: v.t + "px", width: v.w + "px", fontFamily: CSSF[o.font], fontSize: o.size * s + "px", fontWeight: o.bold ? 700 : 400, fontStyle: o.italic ? "italic" : "normal", color: o.color, padding: PAD * s + "px" });
   rotStyle(ta, v);
-  const fit = () => { ta.style.height = "auto"; ta.style.height = Math.max(ta.scrollHeight, (o.size * 1.25 + 2 * PAD) * s) + "px"; };
+  if (o.nowrap) { ta.wrap = "off"; ta.style.whiteSpace = "pre"; }
+  const fit = () => {
+    if (o.nowrap) { ta.style.width = v.w + "px"; ta.style.width = Math.max(v.w, ta.scrollWidth + 4) + "px"; }
+    ta.style.height = "auto"; ta.style.height = Math.max(ta.scrollHeight, (o.size * 1.25 + 2 * PAD) * s) + "px";
+  };
   ta.addEventListener("input", () => { o.text = ta.value; fit(); });
   ta.addEventListener("blur", () => setTimeout(() => { if (S.editing && S.editing.id === o.id) finishEdit(); }, 0));
   ta.addEventListener("keydown", e => { if (e.key === "Escape") { e.preventDefault(); ta.blur(); } e.stopPropagation(); });
@@ -796,7 +807,7 @@ function syncTextHeights(i) {
   const pe = pageEls[i], pg = S.pages[i]; if (!pe || !pg) return; const info = pageInfo(pg);
   for (const el of $$(".o-text", pe.ov)) {
     const o = pg.objs.find(x => x.id === el.dataset.oid); if (!o) continue;
-    const fi = frameOf(info, o); const v = viewRect(fi, o.r, S.zoom); o.r = rectFromView(fi, v.l, v.t, v.w, el.offsetHeight, S.zoom);
+    const fi = frameOf(info, o); const v = viewRect(fi, o.r, S.zoom); o.r = rectFromView(fi, v.l, v.t, o.nowrap ? el.offsetWidth : v.w, el.offsetHeight, S.zoom);
   }
 }
 
@@ -873,20 +884,55 @@ function onTap(e, i) {
   const pe = pageEls[i], pg = S.pages[i]; if (!pe || !pg) return;
   const info = pageInfo(pg), s = S.zoom; const [x, y] = localPt(e, pe.ov);
   const tool = S.tool;
-  if (tool === "edittext") { const ti = t.closest(".titem"); if (ti) editExisting(i, +ti.dataset.k); return; }
+  const touchy = COARSE || (e.pointerType && e.pointerType !== "mouse");
+  if (tool === "edittext") {
+    const items = pg.blank ? [] : S.srcs[pg.src].text[pg.index];
+    if (!items) { toast("Still reading the text on this page. Try again in a moment."); return; }
+    // Fingers are imprecise and lines are only a few pixels tall at phone zoom: take the nearest line within reach.
+    let best = null, bd = Infinity;
+    for (const el of pe.ov.querySelectorAll(".titem")) {
+      const r = el.getBoundingClientRect();
+      const d = Math.hypot(Math.max(r.left - e.clientX, 0, e.clientX - r.right), Math.max(r.top - e.clientY, 0, e.clientY - r.bottom));
+      if (d < bd) { bd = d; best = el; }
+    }
+    if (!best || bd > (touchy ? 28 : 8)) {
+      if (!best) toast(items.length ? "The text on this page can't be edited in place (it is rotated or drawn as shapes). Use White-out, then Add text." : "No editable text on this page. It may be a scanned image: use White-out, then Add text.", true);
+      else toast("Tap on a line of text (outlined with a dashed box). Pinch to zoom in if the text is small.");
+      return;
+    }
+    const k = +best.dataset.k; const it = items[k]; const col = itemColor(i, k);
+    if (touchy && it.size * S.zoom < 15) { const r = best.getBoundingClientRect(); zoomAround(Math.min(17 / it.size, 4), r.left + r.width / 2, r.top + r.height / 2); }
+    editExisting(i, k, col); return;
+  }
   if (tool === "text") {
     const te = t.closest(".o-text"); const ex = te && findObj(i, te.dataset.oid);
     if (ex) { startEdit(i, ex); return; }
-    pushUndo();
-    const p = S.props; const bw = Math.max(60 * s, Math.min(220 * s, viewSize(info, s).w - x - 4));
-    const o = { id: uid(), type: "text", R: info.R, text: "", font: p.font, size: p.size, bold: p.bold, italic: p.italic, color: p.color, r: rectFromView(info, x - PAD * s, y - (p.size * 0.6 + PAD) * s, bw, (p.size * 1.25 + 2 * PAD) * s, s) };
-    pg.objs.push(o); startEdit(i, o); return;
+    if (touchy && S.props.size * s < 15) {
+      const [ux, uy] = v2u(info, x, y, s); zoomAround(Math.min(17 / S.props.size, 4), e.clientX, e.clientY);
+      return onTapText(i, ...u2v(info, ux, uy, S.zoom));
+    }
+    return onTapText(i, x, y);
   }
   if (tool === "place" && S.pending) {
     const im = S.images[S.pending.img]; const wpt = S.pending.width; const hpt = wpt * im.h / im.w;
     pushUndo(); const o = { id: uid(), type: "image", R: info.R, img: S.pending.img, r: rectFromView(info, x - wpt * s / 2, y - hpt * s / 2, wpt * s, hpt * s, s) };
     pg.objs.push(o); S.pending = null; S.sel = { page: i, id: o.id }; setTool("select"); renderOverlay(i); updProps();
   }
+}
+// New text box at viewer point (x, y) on page i, at the current zoom.
+function onTapText(i, x, y) {
+  const pg = S.pages[i], info = pageInfo(pg), s = S.zoom, p = S.props;
+  pushUndo();
+  const bw = Math.max(60 * s, Math.min(220 * s, viewSize(info, s).w - x - 4));
+  const o = { id: uid(), type: "text", R: info.R, text: "", font: p.font, size: p.size, bold: p.bold, italic: p.italic, color: p.color, r: rectFromView(info, x - PAD * s, y - (p.size * 0.6 + PAD) * s, bw, (p.size * 1.25 + 2 * PAD) * s, s) };
+  pg.objs.push(o); startEdit(i, o);
+}
+const COARSE = matchMedia("(pointer: coarse)").matches;
+// Zoom to z keeping the screen point (cx, cy) in view: centred horizontally, a third from the top (above a phone keyboard).
+function zoomAround(z, cx, cy) {
+  const vr = vEl.getBoundingClientRect(); const px = vEl.scrollLeft + cx - vr.left, py = vEl.scrollTop + cy - vr.top;
+  const z0 = S.zoom; setZoom(z, false); const r = S.zoom / z0;
+  vEl.scrollLeft = px * r - vr.width / 2; vEl.scrollTop = py * r - vr.height * 0.3;
 }
 
 /* ---------------- tools / props ---------------- */
@@ -1159,7 +1205,7 @@ async function buildPdf(indices) {
       if (o.type === "text") {
         if (o.cover) { const b = userBox(o.cover); page.drawRectangle({ x: X(b.x), y: Y(b.y), width: b.w, height: b.h, color: rgb(1, 1, 1) }); }
         if (!o.text.trim()) continue;
-        const fi = frameOf(info, o); const f = await font(fkey(o)); const v = viewRect(fi, o.r, 1); const maxW = Math.max(4, v.w - 2 * PAD);
+        const fi = frameOf(info, o); const f = await font(fkey(o)); const v = viewRect(fi, o.r, 1); const maxW = o.nowrap ? 1e9 : Math.max(4, v.w - 2 * PAD);
         const lines = wrapText(san(o.text, stat), f, o.size, maxW);
         lines.forEach((ln, k) => { if (!ln) return; const [ux, uy] = v2u(fi, v.l + PAD, v.t + PAD + o.size * (BASELINE[o.font] + 1.25 * k), 1);
           page.drawText(ln, { x: X(ux), y: Y(uy), size: o.size, font: f, color: hex2rgb(o.color), rotate: degrees(fi.R) }); });
